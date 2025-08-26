@@ -1,4 +1,4 @@
-# credit_risk_model.py
+# creditproject.py
 
 import numpy as np
 import pandas as pd
@@ -25,13 +25,13 @@ from pytensor.tensor import TensorVariable # For type hinting in Op
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-warnings.filterwarnings("ignore", category=UserWarning, module='fredapi') 
+warnings.filterwarnings("ignore", category=UserWarning, module='fredapi')
 
 
 logging.getLogger("pymc").setLevel(logging.ERROR)
 logging.getLogger("arviz").setLevel(logging.ERROR)
-logging.getLogger("theano.tensor.rewriting").setLevel(logging.ERROR) 
-logging.getLogger("aesara.tensor.rewriting").setLevel(logging.ERROR) 
+logging.getLogger("theano.tensor.rewriting").setLevel(logging.ERROR)
+logging.getLogger("aesara.tensor.rewriting").setLevel(logging.ERROR)
 # Add other potential verbose loggers if they appear
 logging.getLogger("numba").setLevel(logging.ERROR) # Numba can be verbose sometimes
 logging.getLogger("pytensor").setLevel(logging.ERROR) # Suppress PyTensor warnings
@@ -1478,104 +1478,7 @@ class CreditRiskModel:
         print(f"  Monte Carlo CDS Price estimated: {estimated_cds_price:.4f}")
         return estimated_cds_price
 
-    def calibrate_cds_model(self, initial_cds_market_data: pd.DataFrame,
-                           initial_guess: Optional[list[float]] = None) -> Optional[dict[str, float]]:
-        """
-        Calibrates the stochastic default intensity model (CIR++) parameters
-        (kappa_lambda, sigma_lambda) to market CDS spreads. This involves
-        minimizing the sum of squared differences between model-implied CDS spreads
-        and market CDS spreads.
 
-        Args:
-            initial_cds_market_data (pd.DataFrame): DataFrame with 'maturity' and 'spread' (decimal).
-            initial_guess (list[float], optional): Initial guess for [kappa_lambda, sigma_lambda].
-                                                  Defaults to [0.5, 0.2] if None.
-
-        Returns:
-            dict: Dictionary of calibrated parameters {kappa_lambda, sigma_lambda}, or None if failed.
-        """
-        print("\nStarting CIR++ CDS model calibration to market spreads (Least Squares)...")
-        if initial_cds_market_data.empty:
-            print("No CDS market data provided for calibration.")
-            return None
-
-        # Sort market data by maturity
-        initial_cds_market_data = initial_cds_market_data.sort_values(by='maturity').reset_index(drop=True)
-
-        # Set initial lambda0 from the shortest maturity CDS spread
-        shortest_maturity_spread = initial_cds_market_data.iloc[0]['spread']
-        self.lambda0 = shortest_maturity_spread / (1.0 - self.recovery_rate) if (1.0 - self.recovery_rate) > 1e-8 else shortest_maturity_spread
-        self.lambda0 = np.maximum(self.lambda0, 1e-8) # Ensure positive
-
-        # Derive theta_lambda_func (time-dependent mean)
-        # We only need the callable here for the LS calibration part.
-        self.theta_lambda_func, _, _ = self._theta_lambda_calibration_target(
-            t_values=np.linspace(0, initial_cds_market_data['maturity'].max(), 100), # Grid for theta(t)
-            initial_cds_spreads=initial_cds_market_data['spread'].values,
-            cds_maturities=initial_cds_market_data['maturity'].values,
-            r0=self.r0
-        )
-
-        if initial_guess is None:
-            initial_guess = [0.5, 0.2] # [kappa_lambda, sigma_lambda]
-
-        # Define the objective function for calibration
-        def objective_function(params: list[float], market_data: pd.DataFrame) -> np.ndarray:
-            kappa_l, sigma_l = params
-
-            # Penalize invalid parameter values. If invalid, fill with large error and skip detailed calculation.
-            if kappa_l <= 0 or sigma_l <= 0:
-                # If parameters are invalid, return a large array of errors
-                return np.full(len(market_data), 1e6)
-
-            # Call the numerical calculation helper directly
-            calculated_spreads = self._calculate_model_spreads_numerical(
-                kappa_l=kappa_l, sigma_l=sigma_l,
-                maturities=market_data['maturity'].values,
-                lambda0_fixed=self.lambda0,
-                theta_func_fixed=self.theta_lambda_func,
-                ir_params_fixed={'r0': self.r0, 'kappa_r': self.kappa_r, 'theta_r': self.theta_r,
-                                 'sigma_r': self.sigma_r, 'rho_correlation': self.rho_correlation},
-                rec_rate_fixed=self.recovery_rate,
-                num_mc_paths=10000, # Use more paths for LS calibration accuracy
-                num_mc_steps=100 # Use more steps for LS calibration accuracy
-            )
-
-            # Return residuals (difference between market and model spreads)
-            return market_data['spread'].values - calculated_spreads
-
-        # End of objective_function (Least Squares)
-
-        bounds = ([1e-6, 1e-6], [2.0, 1.0]) # Bounds for kappa_lambda (speed), sigma_lambda (vol)
-
-        try:
-            # Use least_squares for non-linear curve fitting
-            result = least_squares(
-                objective_function,
-                initial_guess,
-                bounds=bounds,
-                args=(initial_cds_market_data,),
-                method='trf', # Trust-Region-Reflective algorithm
-                ftol=1e-6, xtol=1e-6, gtol=1e-6,
-                max_nfev=500 # Max function evaluations
-            )
-
-            if result.success:
-                calibrated_params = {'kappa_lambda': result.x[0], 'sigma_lambda': result.x[1]}
-                self.kappa_lambda = calibrated_params['kappa_lambda']
-                self.sigma_lambda = calibrated_params['sigma_lambda']
-
-                # Store calibrated parameters in DB
-                self.insert_model_parameters('CIR++_Intensity_LS', calibrated_params) # Changed name for LS
-                print(f"CIR++ CDS model calibration (Least Squares) successful! Calibrated parameters: {calibrated_params}")
-                return calibrated_params
-            else:
-                print(f"CIR++ CDS model calibration (Least Squares) failed: {result.message}")
-                print(f"Last guess: {result.x}")
-                return None
-        except Exception as e:
-            print(f"An error occurred during CIR++ CDS model calibration (Least Squares): {e}")
-            return None
 
     def calibrate_cds_model_bayesian(self, initial_cds_market_data: pd.DataFrame,
                                      draws: int = 2000, tune: int = 1000, chains: int = 4) -> Optional[dict]:
@@ -2073,18 +1976,8 @@ if __name__ == "__main__":
     # --- Part 3: Calibrate Stochastic Default Intensity Model (CIR++) ---
     print("\n--- Part 3: Calibrating CIR++ Default Intensity Model ---")
 
-    # Perform Least Squares Calibration (as before)
-    print("\n--- Running Least Squares Calibration ---")
-    calibrated_cir_params_ls = model.calibrate_cds_model(initial_cds_market_data=sim_cds_data)
 
-    if calibrated_cir_params_ls:
-        # Note: model's kappa_lambda and sigma_lambda are now set by LS calibration.
-        # This will be overwritten if Bayesian calibration is run next.
-        retrieved_cir_params_ls_db = model.get_model_parameters('CIR++_Intensity_LS')
-        print(f"\nRetrieved calibrated CIR++ (Least Squares) parameters from DB: {retrieved_cir_params_ls_db}")
-        model.plot_cds_spread_calibration(sim_cds_data, retrieved_cir_params_ls_db, calib_type='Least Squares')
-    else:
-        print("\nSkipping Least Squares CDS model calibration plot as calibration failed.")
+
 
     # Perform Bayesian Calibration (NEW)
     print("\n--- Running Bayesian Calibration ---")
@@ -2195,5 +2088,4 @@ if __name__ == "__main__":
     else:
         print("Skipping risky bond valuation as default intensity model not calibrated.")
 
-    print("\nCredit Risk Modeling Project completed!")
-
+    print("\nCredit Risk Modeling Project completed")
